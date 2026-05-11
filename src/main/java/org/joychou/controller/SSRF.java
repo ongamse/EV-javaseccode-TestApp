@@ -94,16 +94,59 @@ public class SSRF {
      * UserAgent is <code>Apache-HttpClient/4.5.12 (Java/1.8.0_102)</code>. <br>
      * <a href="http://localhost:8080/ssrf/request/sec?url=http://test.joychou.org">http://localhost:8080/ssrf/request/sec?url=http://test.joychou.org</a>
      */
-    @GetMapping("/request/sec")
-    public String request(@RequestParam String url) {
-        try {
-            SecurityUtil.startSSRFHook();
-            return HttpUtils.request(url);
-        } catch (SSRFException | IOException e) {
-            return e.getMessage();
-        } finally {
-            SecurityUtil.stopSSRFHook();
-        }
+@GetMapping("/request/sec")
+public ResponseEntity<String> request(@RequestParam String url) {
+    // Validate URL format before processing
+    if (!isValidUrl(url)) {
+        return ResponseEntity.badRequest()
+                .contentType(MediaType.TEXT_PLAIN)
+                .header("X-XSS-Protection", "1; mode=block")
+                .header("Content-Security-Policy", "default-src 'self'; script-src 'none'")
+                .body("Invalid URL format");
+    }
+
+    try {
+        SecurityUtil.startSSRFHook();
+        String response = HttpUtils.request(url);
+        
+        // Using OWASP HTML Sanitizer instead of simple HtmlUtils.htmlEscape
+        PolicyFactory sanitizer = Sanitizers.FORMATTING.and(Sanitizers.BLOCKS);
+        String safeResponse = sanitizer.sanitize(response);
+        
+        // Using ResponseEntity.BodyBuilder pattern for cleaner header management
+        return ResponseEntity.ok()
+                .contentType(MediaType.TEXT_PLAIN)
+                .header("X-XSS-Protection", "1; mode=block")
+                .header("Content-Security-Policy", "default-src 'self'; script-src 'none'")
+                .body(safeResponse);
+                
+    } catch (SSRFException | IOException e) {
+        // Also sanitize error messages to prevent XSS through error messages
+        PolicyFactory sanitizer = Sanitizers.FORMATTING.and(Sanitizers.BLOCKS);
+        String safeErrorMessage = sanitizer.sanitize(e.getMessage());
+        
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .contentType(MediaType.TEXT_PLAIN)
+                .header("X-XSS-Protection", "1; mode=block")
+                .header("Content-Security-Policy", "default-src 'self'; script-src 'none'")
+                .body(safeErrorMessage);
+    } finally {
+        SecurityUtil.stopSSRFHook();
+    }
+}
+
+/**
+ * Helper method to validate URL format
+ */
+private boolean isValidUrl(String url) {
+    try {
+        new URL(url);
+        return true;
+    } catch (MalformedURLException e) {
+        return false;
+    }
+}
+
     }
 
 

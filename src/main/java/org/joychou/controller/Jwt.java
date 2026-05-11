@@ -53,10 +53,29 @@ public class Jwt {
      * @param user_cookie cookie
      * @return nickname
      */
-    @GetMapping("/getName")
-    public String getNickname(@CookieValue(COOKIE_NAME) String user_cookie) {
-        String nickname = JwtUtils.getNicknameByJavaJwt(user_cookie);
-        return "Current jwt user is " + nickname;
+@GetMapping("/getName")
+public ResponseEntity<String> getNickname(@CookieValue(COOKIE_NAME) String user_cookie) {
+    String nickname = JwtUtils.getNicknameByJavaJwt(user_cookie);
+    if (nickname == null) {
+        return ResponseEntity.badRequest().body("Invalid JWT token");
     }
+    
+    // Input validation before encoding to reject potentially malicious inputs
+    if (!Pattern.matches("[a-zA-Z0-9_\\s]+", nickname)) {
+        return ResponseEntity.badRequest().body("Nickname contains invalid characters");
+    }
+    
+    // Applied HTML encoding to prevent XSS attacks
+    String encodedNickname = StringEscapeUtils.escapeHtml4(nickname);
+    
+    // For JavaScript contexts (if the nickname is used in JavaScript)
+    String jsEncodedNickname = StringEscapeUtils.escapeEcmaScript(nickname);
+    
+    // Return response with Content-Security-Policy header for defense-in-depth
+    return ResponseEntity.ok()
+        .header("Content-Security-Policy", "default-src 'self'")
+        .body("Current jwt user is " + encodedNickname);
+}
+
 
 }
