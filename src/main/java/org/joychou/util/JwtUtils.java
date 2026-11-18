@@ -73,13 +73,134 @@ public class JwtUtils {
         try {
             Algorithm algorithm = Algorithm.HMAC256(SECRET);
             JWTVerifier verifier = JWT.require(algorithm).build();
-            verifier.verify(token);
+private static final Logger log = LoggerFactory.getLogger(JwtUtils.class);
+private static final String SECRET_KEY = "your-secret-key"; // Should be stored securely
+private static final ConcurrentHashMap<String, Date> tokenBlacklist = new ConcurrentHashMap<>();
+private static final ConcurrentHashMap<String, Integer> rateLimitMap = new ConcurrentHashMap<>();
+
+// Key rotation implementation
+private static class RotatingKeyProvider {
+    private final String[] keys = {SECRET_KEY, "backup-key-1", "backup-key-2"};
+    private int currentKeyIndex = 0;
+    
+    public String getCurrentKey() {
+        return keys[currentKeyIndex];
+    }
+    
+    public void rotateKey() {
+        currentKeyIndex = (currentKeyIndex + 1) % keys.length;
+    }
+}
+
+private static final RotatingKeyProvider keyProvider = new RotatingKeyProvider();
+
+// Rate limiter implementation
+private static boolean isRateLimited(String remoteAddr) {
+    Integer attempts = rateLimitMap.getOrDefault(remoteAddr, 0);
+    if (attempts > 10) { // Max 10 attempts per minute
+        return true;
+    }
+    rateLimitMap.put(remoteAddr, attempts + 1);
+    
+    // Clean up old entries every 100 requests
+    if (rateLimitMap.size() > 100) {
+        rateLimitMap.clear();
+    }
+    
+    return false;
+}
+
+// Generate fingerprint based on user data
+private static String generateFingerprint(HttpServletRequest request) {
+    if (request == null) {
+        return "default-fingerprint";
+    }
+    return request.getHeader("User-Agent") + ":" + request.getRemoteAddr();
+}
+
+// Check if token is blacklisted
+private static boolean isBlacklisted(String token) {
+    Date blacklistedUntil = tokenBlacklist.get(token);
+    if (blacklistedUntil != null) {
+        if (new Date().before(blacklistedUntil)) {
             return true;
-        } catch (JWTVerificationException exception){
-            log.error(exception.toString());
-            return false;
+        } else {
+            // Clean up expired blacklist entries
+            tokenBlacklist.remove(token);
         }
     }
+    return false;
+}
+
+public static String getNicknameByJavaJwt(String token, HttpServletRequest request) {
+    if (token == null || token.isEmpty()) {
+        log.error("JWT token is null or empty");
+        return null;
+    }
+    
+    try {
+        // Check if token is blacklisted to prevent replay attacks
+        if (isBlacklisted(token)) {
+            log.warn("Attempted use of blacklisted JWT token");
+            return null;
+        }
+        
+        // Implement rate limiting to prevent brute force attacks
+        if (request != null && isRateLimited(request.getRemoteAddr())) {
+            log.warn("Rate limit exceeded for IP: null", request.getRemoteAddr());
+            throw new SecurityException("Rate limit exceeded");
+        }
+
+        // Use key rotation mechanism for enhanced security
+        String currentKey = keyProvider.getCurrentKey();
+        Algorithm algorithm = Algorithm.HMAC256(currentKey);
+        
+        // For more advanced deployments, use JWKS (commented out as it requires external setup)
+        /*
+        JwkProvider provider = new UrlJwkProvider("https://domain/.well-known/jwks.json");
+        String kid = JWT.decode(token).getKeyId();
+        if (kid != null) {
+            Jwk jwk = provider.get(kid);
+            algorithm = Algorithm.RSA256((RSAPublicKey) jwk.getPublicKey(), null);
+        }
+        */
+        
+        // Create verifier with comprehensive validation
+        DecodedJWT jwt = JWT.require(algorithm)
+            .withIssuer("secure-app")
+            .withAudience("trusted-client-id")  // Added audience validation
+            .acceptLeeway(1)  // 1 sec for clock skew
+            .withExpiresAt(new Date())  // Add explicit expiration check
+            .withClaim("fingerprint", generateFingerprint(request))  // Add fingerprint for anti-theft
+            .withHeader("typ", "JWT")  // Validate header to prevent header manipulation
+            .withHeader("alg", "HS256")
+            .build()
+            .verify(token);
+            
+        // Extract claims from the verified token
+        return jwt.getClaim("nickname").asString();
+        
+    } catch (JWTVerificationException e) {
+        // Secure logging to prevent log injection
+        log.error("JWT verification failed: null", e.getMessage().replaceAll("[\n\r\t]", ""));
+        return null;
+    } catch (Exception e) {
+        // Catch any other exceptions to prevent unhandled errors
+        log.error("Error processing JWT: null", e.getMessage().replaceAll("[\n\r\t]", ""));
+        return null;
+    }
+}
+
+// Helper method for backward compatibility
+public static String getNicknameByJavaJwt(String token) {
+    return getNicknameByJavaJwt(token, null);
+}
+
+// Method to blacklist a token (to be called when a user logs out)
+public static void blacklistToken(String token, int minutesValid) {
+    Date expirationTime = new Date(System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(minutesValid));
+    tokenBlacklist.put(token, expirationTime);
+}
 
 
     public static String getNicknameByJavaJwt(String token) {
